@@ -1,10 +1,4 @@
-/* this package provides support for mpeg2 ts functions.
-- demuxing from file
-- checking the 4 byte header
-- pcr checking
-- PAT/ PMT / SDT and SCTE-35 parsing
-*/
-
+// this package provides support for mpeg2 ts functions. demuxing from file, checking the 4 byte header, pcr checking, PAT/ PMT / SDT and SCTE-35 parsing
 package tshelper
 
 import (
