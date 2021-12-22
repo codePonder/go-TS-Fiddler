@@ -19,7 +19,7 @@ type tsHeaderInfo struct {
 }
 
 func Tshelper() {
-	fmt.Println(" == hello from tshelper v2 == ")
+	fmt.Println(" == hello from tshelper v3 == ")
 }
 
 // function to parse the data sent.  Data must be byte aligned
