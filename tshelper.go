@@ -8,17 +8,15 @@ import (
 
 // the data structure that is the TS-Demultiplxer
 type tsdmx struct {
-	pidfacts pidStats
+	pidStats map[uint16]pidInfo
 }
 
-
-// informatin on what we have seen on individual PIDs
-type pidStats struct {
-	lastContCount	map[uint16]uint8
-	contCountErrors  map[uint16]uint8
-	packetCount		map[uint16]uint8
+// information on what we have seen on individual PIDs
+type pidInfo struct {
+	lastContCount uint8
+	contCountErrors uint64
+	packetCount uint64
 }
-
 
 
 // structure of the 4 byte TS header iso 13818
@@ -108,7 +106,8 @@ func (metaInfo tsdmx) ParseTSDataBlob(blobData []byte, blobLength uint64) (dataP
 			payloadLength  := uint8(184)
 			tsAdaptFields := new(tsAdaptInfo)
 			header := parseTSHeader (nextPacket)
-
+			pidData := metaInfo.pidStats[header.pid]
+			
 
 			if (header.adaptation & 0x2) == 0x2 {
 				adaptationLength := uint8(blobData[4])
@@ -125,18 +124,19 @@ func (metaInfo tsdmx) ParseTSDataBlob(blobData []byte, blobLength uint64) (dataP
 				}
 			}
 			
-			if metaInfo.pidfacts.packetCount[header.pid] != 0 {
-				expectedContCount := metaInfo.pidfacts.lastContCount[header.pid]
+			if pidData.packetCount!= 0 {
+				expectedContCount := pidData.lastContCount
 				if (header.adaptation & 0x1) == 0x1 {
 					expectedContCount = (expectedContCount + 1) & 0xf;
 				}
 				if ((expectedContCount != header.contCount) && (tsAdaptFields.discontinuityFlag == 0)) {
-						metaInfo.pidfacts.contCountErrors[header.pid] += 1
+					pidData.contCountErrors += 1
 				}
 			}
+			pidData.lastContCount = header.contCount
 
-			metaInfo.pidfacts.packetCount[header.pid] += 1
-			metaInfo.pidfacts.lastContCount[header.pid] = header.contCount
+			pidData.packetCount += 1
+			metaInfo.pidStats[header.pid] = pidData
 
 			fmt.Printf(" sync 0x%x  payloadLength %v", header.syncByte, payloadLength)
 		}
