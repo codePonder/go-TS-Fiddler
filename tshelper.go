@@ -6,6 +6,21 @@ import (
 	"fmt"
 )
 
+// the data structure that is the TS-Demultiplxer
+type tsdmx struct {
+	pidfacts pidStats
+}
+
+
+// informatin on what we have seen on individual PIDs
+type pidStats struct {
+	lastContCount	map[uint16]uint8
+	contCountErrors  map[uint16]uint8
+	packetCount		map[uint16]uint8
+}
+
+
+
 // structure of the 4 byte TS header iso 13818
 type tsHeaderInfo struct {
 	syncByte          uint8  // 8 bits
@@ -15,42 +30,116 @@ type tsHeaderInfo struct {
 	pid               uint16 // 13 bits
 	scrambling        uint8  // 2 bits
 	adaptation        uint8  // 2 bits
-	continuity        uint8  // 4 bits
+	contCount   	  uint8  // 4 bits
 }
 
-func Tshelper() {
-	fmt.Println(" == hello from tshelper v3 == ")
+// structure of possible adaptation fields in a TS packet
+type tsAdaptInfo struct {
+	discontinuityFlag uint8 
+	raiflag uint8
+	espiflag uint8          
+	pcrFlag  uint8                 
+	opcrFlag uint8
+	splicePointFlag uint8
 }
 
-// function to parse the data sent.  Data must be byte aligned
+
+// Allow external code to create a tsdmux block (aka == The Constructor == )
+func Newtsdmx ( ) tsdmx {
+	newStruct := tsdmx{}
+	return newStruct
+}
+
+
+// extract bitfield meanings from the 4 Byte TS header (ISO13818) 
+func parseTSHeader (nextPacket []byte) (header *tsHeaderInfo) {
+	header = new(tsHeaderInfo)
+	header.syncByte = uint8(nextPacket[0])
+	header.transportError = (uint8(nextPacket[1]) & 0x80) >> 7
+	header.payloadUnitStart = (uint8(nextPacket[1]) & 0x40) >> 6
+	header.transportPriority = (uint8(nextPacket[1]) & 0x20) >> 5
+	header.pid = ((uint16(nextPacket[1]) & 0x1f) << 8) + uint16(nextPacket[2])
+	header.scrambling = uint8(nextPacket[3]) & 0xc0 >> 6
+	header.adaptation = uint8(nextPacket[3]) & 0x30 >> 4
+	header.contCount  = uint8(nextPacket[3]) & 0x0f
+	return 
+}
+
+// extract bitfield meaning from the adaptation field flags
+func parseTSAdaptFields (adaptationByte uint8, tsAdaptFields *tsAdaptInfo) {
+	tsAdaptFields = new(tsAdaptInfo)
+	tsAdaptFields.discontinuityFlag = adaptationByte & 0x80;
+	tsAdaptFields.raiflag           = adaptationByte & 0x40;          
+	tsAdaptFields.espiflag          = adaptationByte & 0x20;          
+	tsAdaptFields.pcrFlag           = adaptationByte & 0x10;                    
+	tsAdaptFields.opcrFlag          = adaptationByte & 0x08;
+	tsAdaptFields.splicePointFlag   = adaptationByte & 0x04;
+}
+
+// extract the pcr from the adaptation fields in the packet
+// pass in pointer to start of adaptation field, return PCR as uint64
+func extractPCR (adaptationData []byte) (pcr27Mhz uint64) {
+	top32Bits := (uint64(adaptationData[0]) << 24) +
+				(uint64(adaptationData[1])	   << 16) +
+				(uint64(adaptationData[2])	   <<  8) +
+				(uint64(adaptationData[3]) 	   <<  0)
+	lsb         := (uint64(adaptationData[4]) >> 7) & 1
+	top33Bits   := (top32Bits * 2) + lsb;
+	bottom9Bits := ((uint64(adaptationData[4]) & 1) << 8) + uint64(adaptationData[5]);
+	pcr27Mhz    = (top33Bits * 300) + bottom9Bits
+	return
+}
+
+
+// Parse the data sent.  Data must be byte aligned
 // start with a 0x47 (ie the start of a TS packet must be first)
 // length of blob is number bytes passed in
-func parseTSDataBlob(blobData []byte, blobLength uint64) (dataParsed uint64, err error) {
-
+func (metaInfo tsdmx) ParseTSDataBlob(blobData []byte, blobLength uint64) (dataParsed uint64, err error) {
 	err = nil
 	dataParsed = 0
-	blobLength = (blobLength % 188) * 188 // must be multiple of TS packet length
-	packetToProcess := uint64(0)
-	nextPacket := blobData[packetToProcess:]
+	blobLength = (blobLength / 188) * 188 // must be multiple of TS packet length
 
 	if blobLength == 0 {
 		err = errors.New(" TS parsing requires blob to be >= 188 bytes long ")
 	} else {
-		header := new(tsHeaderInfo)
-		for packetToProcess = 0; packetToProcess < blobLength; packetToProcess += 188 {
-			nextPacket = blobData[packetToProcess:(packetToProcess + 188)]
-			header.syncByte = uint8(nextPacket[0])
-			header.transportError = uint8(nextPacket[1])
-			header.payloadUnitStart = uint8(nextPacket[1])
-			header.transportPriority = uint8(nextPacket[1])
-			header.pid = ((uint16(nextPacket[1]) & 0x0f) << 8) + uint16(nextPacket[2])
-			header.scrambling = uint8(nextPacket[3]) & 0xc0 >> 6
-			header.adaptation = uint8(nextPacket[3]) & 0x30 >> 4
-			header.continuity = uint8(nextPacket[3]) & 0x0f
+		for packetToProcess := uint64(0); packetToProcess < blobLength; packetToProcess += 188 {
+			nextPacket := blobData[packetToProcess:(packetToProcess + 188)]
+			startOfPayload := uint8(0)
+			payloadLength  := uint8(184)
+			tsAdaptFields := new(tsAdaptInfo)
+			header := parseTSHeader (nextPacket)
+
+
+			if (header.adaptation & 0x2) == 0x2 {
+				adaptationLength := uint8(blobData[4])
+				if adaptationLength != 0 {
+					adaptationBitField := uint8(blobData[5])
+					parseTSAdaptFields(adaptationBitField, tsAdaptFields)
+					startOfPayload += (1 + adaptationLength);
+					payloadLength = 184 - (1 + adaptationLength);
+
+					if tsAdaptFields.pcrFlag == 1 {
+						pcr27Mhz := extractPCR(blobData[5:5+adaptationLength])
+						fmt.Printf("%v", pcr27Mhz)
+					}
+				}
+			}
+			
+			if metaInfo.pidfacts.packetCount[header.pid] != 0 {
+				expectedContCount := metaInfo.pidfacts.lastContCount[header.pid]
+				if (header.adaptation & 0x1) == 0x1 {
+					expectedContCount = (expectedContCount + 1) & 0xf;
+				}
+				if ((expectedContCount != header.contCount) && (tsAdaptFields.discontinuityFlag == 0)) {
+						metaInfo.pidfacts.contCountErrors[header.pid] += 1
+				}
+			}
+
+			metaInfo.pidfacts.packetCount[header.pid] += 1
+			metaInfo.pidfacts.lastContCount[header.pid] = header.contCount
+
+			fmt.Printf(" sync 0x%x  payloadLength %v", header.syncByte, payloadLength)
 		}
 	}
-
-	test := blobData[0]
-	fmt.Printf(" first byte 0x%x", test)
 	return
 }
