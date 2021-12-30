@@ -9,6 +9,8 @@ import (
 // the data structure that is the TS-Demultiplxer
 type tsdmx struct {
 	pidStats map[uint16]pidInfo
+	globalStats globalInfo
+	tables tableParser
 }
 
 // information on what we have seen on individual PIDs
@@ -16,6 +18,12 @@ type pidInfo struct {
 	lastContCount uint8
 	contCountErrors uint64
 	packetCount uint64
+}
+
+
+// information on what we have seen generic to the wholestream
+type globalInfo struct {
+	totalPackets uint64
 }
 
 
@@ -45,6 +53,8 @@ type tsAdaptInfo struct {
 // Allow external code to create a tsdmux block (aka == The Constructor == )
 func Newtsdmx ( ) tsdmx {
 	newStruct := tsdmx{}
+	newStruct.pidStats = make(map[uint16]pidInfo)
+	newStruct.tables = newTableParser()
 	return newStruct
 }
 
@@ -102,7 +112,7 @@ func (metaInfo tsdmx) ParseTSDataBlob(blobData []byte, blobLength uint64) (dataP
 	} else {
 		for packetToProcess := uint64(0); packetToProcess < blobLength; packetToProcess += 188 {
 			nextPacket := blobData[packetToProcess:(packetToProcess + 188)]
-			startOfPayload := uint8(0)
+			startOfPayload := uint8(4)
 			payloadLength  := uint8(184)
 			tsAdaptFields := new(tsAdaptInfo)
 			header := parseTSHeader (nextPacket)
@@ -110,15 +120,15 @@ func (metaInfo tsdmx) ParseTSDataBlob(blobData []byte, blobLength uint64) (dataP
 			
 
 			if (header.adaptation & 0x2) == 0x2 {
-				adaptationLength := uint8(blobData[4])
+				adaptationLength := uint8(nextPacket[4])
 				if adaptationLength != 0 {
-					adaptationBitField := uint8(blobData[5])
+					adaptationBitField := uint8(nextPacket[5])
 					parseTSAdaptFields(adaptationBitField, tsAdaptFields)
 					startOfPayload += (1 + adaptationLength);
 					payloadLength = 184 - (1 + adaptationLength);
 
 					if tsAdaptFields.pcrFlag == 1 {
-						pcr27Mhz := extractPCR(blobData[5:5+adaptationLength])
+						pcr27Mhz := extractPCR(nextPacket[5:5+adaptationLength])
 						fmt.Printf("%v", pcr27Mhz)
 					}
 				}
@@ -134,11 +144,17 @@ func (metaInfo tsdmx) ParseTSDataBlob(blobData []byte, blobLength uint64) (dataP
 				}
 			}
 			pidData.lastContCount = header.contCount
-
 			pidData.packetCount += 1
+			
+			if header.pid == 0 {
+				fmt.Printf("\n[%v] %v %v %v",header.pid, payloadLength, startOfPayload, header.adaptation)
+			}
+			metaInfo.tables.checkForSiPsi(header.pid, header.payloadUnitStart, payloadLength, nextPacket[startOfPayload:] )
+
+			metaInfo.globalStats.totalPackets += 1
 			metaInfo.pidStats[header.pid] = pidData
 
-			fmt.Printf(" sync 0x%x  payloadLength %v", header.syncByte, payloadLength)
+			//fmt.Printf(" sync 0x%x  payloadLength %v", header.syncByte, payloadLength)
 		}
 	}
 	return
