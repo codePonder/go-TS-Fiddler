@@ -118,7 +118,6 @@ func (metaInfo tsdmx) ParseTSDataBlob(blobData []byte, blobLength uint64) (dataP
 			header := parseTSHeader (nextPacket)
 			pidData := metaInfo.pidStats[header.pid]
 			
-
 			if (header.adaptation & 0x2) == 0x2 {
 				adaptationLength := uint8(nextPacket[4])
 				if adaptationLength != 0 {
@@ -146,9 +145,6 @@ func (metaInfo tsdmx) ParseTSDataBlob(blobData []byte, blobLength uint64) (dataP
 			pidData.lastContCount = header.contCount
 			pidData.packetCount += 1
 			
-			if header.pid == 0 {
-				fmt.Printf("\n[%v] %v %v %v",header.pid, payloadLength, startOfPayload, header.adaptation)
-			}
 			metaInfo.tables.checkForSiPsi(header.pid, header.payloadUnitStart, payloadLength, nextPacket[startOfPayload:] )
 
 			metaInfo.globalStats.totalPackets += 1

@@ -128,21 +128,25 @@ func(tables tableParser) checkForSiPsi(pid uint16, pusi uint8, dataLeft uint8, d
 
 	if isTable {
 		if pusi == 1 {
-			pointerField := uint8(data[0])
+
+			pointerField := uint8(data[0]) + 1
 			activeData := data[pointerField:]
 			dataLeft -= pointerField
 
-			tableID := uint8(activeData[0])
+			tableID := tableIDsEnum(activeData[0])
 			sectionLength := ((uint16(activeData[1]) << 8 ) + uint16(activeData[2]) ) & 0x0fff
+
 			if (sectionLength <= uint16(dataLeft)) {
 				// transportStreamID 3, 4
 				// versionNumber := (uint8(activeData[5]) >> 1) & 0x1f
 				// currentNext := (uint8(activeData[5])) & 0x1
-				// sectionNumber := uint8(activeData[6])
-				// lastSectionNumber := (uint8(activeData[7]))
-				
-				fmt.Printf(" \n found  a table PID %v tableID %v \n", pid, tableID)
-				fmt.Println(" table Type  ", tables.tablesMap[pid].tabletype)
+				//sectionNumber := uint8(activeData[6])
+				//lastSectionNumber := (uint8(activeData[7]))
+				sectionLength -= 5
+				dataLeft -= 8
+				if tableID == programAssociationSection {
+					 patParser (activeData[8:], sectionLength, tables.tablesMap)
+				}
 			} else {
 				fmt.Printf("\n [%v] %v %v Table Section Length %v > payload available %v in 1 packet - NOT SUPORTED", pid, pusi, tableID,  sectionLength, dataLeft )
 			}
@@ -158,11 +162,11 @@ func(tables tableParser) checkForSiPsi(pid uint16, pusi uint8, dataLeft uint8, d
 // for the services in this stream.
 // jump here after the tavle upto and including last_section_number
 // TODO  - PATs have a CRC that should be checked for validty.... 
-func patParser (dataBuffer []byte, dataLeft uint32, tableMap  map[uint16]tablesMapEntry) {
+func patParser (dataBuffer []byte, dataLeft uint16, tableMap  map[uint16]tablesMapEntry) {
 	
 	for rd := 0 ; dataLeft > 4; dataLeft -= 4 {
 		programNumber := (uint16(dataBuffer[rd]) << 8) + uint16(dataBuffer[rd+1])
-		pid := (uint16(dataBuffer[rd+2]) << 8) + uint16(dataBuffer[rd+3]) 
+		pid := ((uint16(dataBuffer[rd+2]) << 8) + uint16(dataBuffer[rd+3])) & 0x1fff
 		rd += 4
 		// overwrite or create if needed an entry in Tables for PMT just referenced
 		tableEntry := tableMap[pid]
@@ -170,6 +174,7 @@ func patParser (dataBuffer []byte, dataLeft uint32, tableMap  map[uint16]tablesM
 			tableEntry.tabletype = nitTable
 		} else {
 			tableEntry.tabletype = pmtTable
+			fmt.Printf(" \n From PAT :: PMT prog # %d  is 0x%x \n", programNumber, pid)
 		}
 		tableEntry.programNumber = programNumber
 		tableMap[pid] = tableEntry
