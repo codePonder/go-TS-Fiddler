@@ -164,6 +164,7 @@ func (metaInfo tsdmx) SummariseFindings() {
 	for k := range metaInfo.pidStats {
         fmt.Printf("PID found %v    pkts %d \n", k, metaInfo.pidStats[k].packetCount)
     }
+	metaInfo.tables.summariseServiceList()
 	fmt.Printf(" ###################### \n")
 	
 

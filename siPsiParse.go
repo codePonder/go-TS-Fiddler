@@ -70,19 +70,15 @@ type streamComponentDefinition struct {
 }
 
 type programDefinition struct{
-	pcrPID uint16
+	serviceName string
 	programNumber uint16
+	pcrPID uint16
 	programHasSCTE35 bool
 	definedMaxBitrate uint32
 	numberOfStreams uint32
 	streamComps []streamComponentDefinition
 }
 
-type pmtInfoStored struct {
-    streamType uint8
-    streamPID uint16
-    cueDescriptor bool
-}
 
 type tablesMapEntry struct {
 	tabletype tableTypeEnum
@@ -94,9 +90,22 @@ type tablesMapEntry struct {
 }
 
 
-// structure that is the tableParser
+// structure that IS the tableParser
 type tableParser struct {
+
+	// knowing where the various Tables are (what PID they occupy) is useful to send
+	// them to teh appropriate parser.  tablesMap starts with just PAT / SDT entry and then
+	// grows as more tables are discovered
+
 	tablesMap map[uint16]tablesMapEntry
+
+	// Its useful to collate all the service information we have from the various
+	// tables into a single entity for reference - this is it.   Index by ServiceID {(aka) ProgramNumber}
+	// so that armed with a serviceID you can find the information amassed from all the tables parsed
+	// NOTE :: this gives us a service orientated insight,a PID orientated insight is available elsewhere for 
+	// use when that is more appropriate
+	serviceMap map[uint16]programDefinition
+
 }
 
 
@@ -105,6 +114,7 @@ func newTableParser () tableParser {
 	newStruct := tableParser {}
 	newStruct.tablesMap = make(map[uint16]tablesMapEntry)
 	
+	// prefill the table Map with SDT and PAT since we know where they will be
 	piddata := tablesMapEntry {}
 
 	piddata.tabletype = patTable
@@ -113,6 +123,10 @@ func newTableParser () tableParser {
 	piddata.tabletype = sdtTable
 	newStruct.tablesMap[0x11] = piddata
 	
+	// create empty Service List so we have somewhere to build up the service level view 
+	newStruct.serviceMap  = make(map[uint16]programDefinition)
+
+
 	return newStruct
 }
 
@@ -161,10 +175,12 @@ func(tables tableParser) checkForSiPsi(pid uint16, pusi uint8, dataLeft uint8, d
 				sectionLength -= 5
 				dataLeft -= 8
 				if tableID == programAssociationSection {
-					 patParser (activeData[8:], sectionLength, tables.tablesMap)
+					 patParser (activeData[8:], sectionLength, tables.tablesMap, tables.serviceMap)
 					 fmt.Printf("%v \n", tables.tablesMap)
 				} else if tableID == ProgramMapSection{
-					 pmtParser (activeData[8:], sectionLength)
+					// TODO table ID says this is a PMT, was that was the PAT said it was (it lists PMTs)?
+					 programNumber := tables.tablesMap[pid].programNumber
+					 pmtParser (activeData[8:], sectionLength, tables.serviceMap, programNumber)
 				} else if tableID == sdtSectionActualTransportStream {
 					sdtParser (activeData[8:], sectionLength)
 			   }
@@ -183,7 +199,7 @@ func(tables tableParser) checkForSiPsi(pid uint16, pusi uint8, dataLeft uint8, d
 // for the services in this stream.
 // jump here after the tavle upto and including last_section_number
 // TODO  - PATs have a CRC that should be checked for validty.... 
-func patParser (dataBuffer []byte, dataLeft uint16, tableMap  map[uint16]tablesMapEntry) {
+func patParser (dataBuffer []byte, dataLeft uint16, tableMap  map[uint16]tablesMapEntry, serviceMap map[uint16]programDefinition) {
 	
 	for rd := 0 ; dataLeft > 4; dataLeft -= 4 {
 		programNumber := (uint16(dataBuffer[rd]) << 8) + uint16(dataBuffer[rd+1])
@@ -194,6 +210,10 @@ func patParser (dataBuffer []byte, dataLeft uint16, tableMap  map[uint16]tablesM
 		if programNumber == 0 {
 			tableEntry.tabletype = nitTable
 		} else {
+			serviceEntry := serviceMap[programNumber]
+			serviceEntry.programNumber = programNumber
+			serviceMap[programNumber] = serviceEntry
+			
 			tableEntry.tabletype = pmtTable
 			fmt.Printf(" \n From PAT :: PMT prog # %d  is 0x%x \n", programNumber, pid)
 		}
@@ -210,11 +230,10 @@ func patParser (dataBuffer []byte, dataLeft uint16, tableMap  map[uint16]tablesM
 // TODO - really should be checking the CRC, tracking version and handling multi-section PMTs
 // This initial code is only meant for use with SIMPLE streams where the PMT fits in 1 TS packet
 
-func pmtParser (dataBuffer []byte, dataLeft uint16) {
+func pmtParser (dataBuffer []byte, dataLeft uint16, serviceMap map[uint16]programDefinition, programNumber uint16)  {
 
 	programContainsSCTE35 := false
 	maxBitrate := uint32(0) 
-	serviceID := uint16(1) // progInfo.programNumber;
 	pcrPID 	:= ( (uint16(dataBuffer[0]) << 8) | uint16(dataBuffer[1]) ) & 0x1fff
 	programInfoLength := ( (uint16(dataBuffer[2]) << 8) | uint16(dataBuffer[3]) ) & 0x0fff
 	dataLeft -= 4
@@ -261,16 +280,15 @@ func pmtParser (dataBuffer []byte, dataLeft uint16) {
 	// Program Info loop
 	dataLeft -= programInfoLength
 
+	serviceEntry := serviceMap[programNumber]
 	// TODO create an interface to craete these structure and make a 0 length list in side, as opposed to needing to do
 	// by hand each time
-	programDef := new(programDefinition)
-	programDef.streamComps = make([]streamComponentDefinition, 0)
-
-	programDef.pcrPID = pcrPID
-	programDef.programNumber = serviceID
-	programDef.programHasSCTE35  = programContainsSCTE35
-	programDef.definedMaxBitrate = maxBitrate
-	programDef.numberOfStreams = 0
+	serviceEntry.streamComps = make([]streamComponentDefinition, 0)
+	serviceEntry.pcrPID = pcrPID
+	serviceEntry.programHasSCTE35  = programContainsSCTE35
+	serviceEntry.definedMaxBitrate = maxBitrate
+	serviceEntry.numberOfStreams = 0
+	serviceEntry.serviceName = "not-Seen-SDT-Yet"
 
 	streamDef := streamComponentDefinition {}
 	rd := 0	
@@ -289,7 +307,7 @@ func pmtParser (dataBuffer []byte, dataLeft uint16) {
 		dataLeft -= 2
 		
 		rd += 5
-		programDef.streamComps = append(programDef.streamComps, streamDef)
+		serviceEntry.streamComps = append(serviceEntry.streamComps, streamDef)
 
 		// the only stream type sought is cue descriptors, ie SCTE35 stuff.   Parse through 
 		// the data to check for them
@@ -313,6 +331,8 @@ func pmtParser (dataBuffer []byte, dataLeft uint16) {
 		rd += int(esInfoLength)
 		dataLeft -= esInfoLength;
 	}
+
+	serviceMap[programNumber] = serviceEntry
 
 	// TODO - catch system if number programs is exploding on us
 
@@ -363,4 +383,15 @@ func sdtParser (dataBuffer []byte, dataLeft uint16) {
 
 	//TODO HANDLE THE crc 
 
+}
+
+
+// display the contents of the service List
+func(tables tableParser) summariseServiceList () {
+
+	fmt.Println(" Summary By Service")
+	fmt.Printf(" Service List length %d \n", len(tables.serviceMap))
+	for _, service := range tables.serviceMap {
+		fmt.Printf(" [%d] %s  has  %d components ", service.programNumber, service.serviceName, len(service.streamComps))
+	}
 }
