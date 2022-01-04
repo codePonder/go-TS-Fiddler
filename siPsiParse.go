@@ -180,9 +180,9 @@ func(tables tableParser) checkForSiPsi(pid uint16, pusi uint8, dataLeft uint8, d
 				} else if tableID == ProgramMapSection{
 					// TODO table ID says this is a PMT, was that was the PAT said it was (it lists PMTs)?
 					 programNumber := tables.tablesMap[pid].programNumber
-					 pmtParser (activeData[8:], sectionLength, tables.serviceMap, programNumber)
+					 pmtParser (activeData[8:], sectionLength, tables.tablesMap, tables.serviceMap, programNumber)
 				} else if tableID == sdtSectionActualTransportStream {
-					sdtParser (activeData[8:], sectionLength)
+					sdtParser (activeData[8:], sectionLength, tables.serviceMap)
 			   }
 			} else {
 				fmt.Printf("\n [%v] %v %v Table Section Length %v > payload available %v in 1 packet - NOT SUPORTED", pid, pusi, tableID,  sectionLength, dataLeft )
@@ -230,7 +230,7 @@ func patParser (dataBuffer []byte, dataLeft uint16, tableMap  map[uint16]tablesM
 // TODO - really should be checking the CRC, tracking version and handling multi-section PMTs
 // This initial code is only meant for use with SIMPLE streams where the PMT fits in 1 TS packet
 
-func pmtParser (dataBuffer []byte, dataLeft uint16, serviceMap map[uint16]programDefinition, programNumber uint16)  {
+func pmtParser (dataBuffer []byte, dataLeft uint16, tableMap  map[uint16]tablesMapEntry, serviceMap map[uint16]programDefinition, programNumber uint16)  {
 
 	programContainsSCTE35 := false
 	maxBitrate := uint32(0) 
@@ -321,10 +321,13 @@ func pmtParser (dataBuffer []byte, dataLeft uint16, serviceMap map[uint16]progra
 		 		if tag == 0x8a {
 		 			streamDef.cueDescriptor = true
 		 			if programContainsSCTE35 {
-						//  TODO store scte35 pid to "look for tables"
+						tablesEntry := tableMap[streamDef.streamPID] 
+						tablesEntry.tabletype = scte35Table
+						tablesEntry.programNumber = programNumber
+						tableMap[streamDef.streamPID] = tablesEntry
 		 			}
 		 		} 
-		 		descStart += int(length)
+		 		descStart += int(length + 2)
 		 		descriptorLength -= uint16(1 + 1 + length);
 		 	}
 		}
@@ -343,7 +346,7 @@ func pmtParser (dataBuffer []byte, dataLeft uint16, serviceMap map[uint16]progra
 
 
 // Parse the SDT 
-func sdtParser (dataBuffer []byte, dataLeft uint16) {
+func sdtParser (dataBuffer []byte, dataLeft uint16, serviceMap map[uint16]programDefinition) {
 
 	rd := 0
 	rd += 3 //  ignore original_network_id :16 and reserved_future_use :8 
@@ -352,6 +355,7 @@ func sdtParser (dataBuffer []byte, dataLeft uint16) {
 	for dataLeft > 4 {
 		serviceID := (uint16(dataBuffer[rd]) << 8) | uint16(dataBuffer[rd+1])
 		dataLeft -= 2
+
 		// ignore  reserved_future_use :6, EIT_schedule_flag :1  EIT_present_following_flag : 1 
 		dataLeft -= 1
 
@@ -371,10 +375,13 @@ func sdtParser (dataBuffer []byte, dataLeft uint16) {
 				serviceNameStart := (descriptorRd + 3 + 1 + int(serviceProviderNameLength) + 1 )
 				serviceName := string( dataBuffer[serviceNameStart : serviceNameStart + int(serviceNameLength) ] )
 				fmt.Printf("\n SDT : [%d] :: %s  ",serviceID,  serviceName)
+
+				serviceEntry := serviceMap[serviceID]
+				serviceEntry.serviceName = serviceName
+				serviceMap[serviceID] = serviceEntry
 			}
 			descriptorRd += int(length + 2)
 			bytesAvailable -= int(length + 2)
-
 		}
 
 		rd += int(desriptorLength)
