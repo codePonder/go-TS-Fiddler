@@ -90,6 +90,7 @@ type tablesMapEntry struct {
 }
 
 
+
 // structure that IS the tableParser
 type tableParser struct {
 
@@ -396,9 +397,29 @@ func sdtParser (dataBuffer []byte, dataLeft uint16, serviceMap map[uint16]progra
 // display the contents of the service List
 func(tables tableParser) summariseServiceList () {
 
+	var streamTypeStringMapping map[uint8]string
+	streamTypeStringMapping = map[uint8]string { 	0x1 : "Mpeg1 Video",
+													0x2 : "Mpeg2 Video",
+													0x3 : "Mpeg1 Layer2 Audio",
+													0x4 : "Mpeg2 Audio",
+													0x6 : "AC-3 (DVB)", 
+													0xF : "ADTS AAC Audio",
+													0x11 : "LATM AAC",
+													0x1b : "H264 Video",
+													0x24 : "HEVC",
+													0x81 : "AC-3 (ATSC)",
+													0x86 : "SCTE-35",
+												    0x87 : "DDPlus "}
+	
+	fmt.Printf(" %v ", streamTypeStringMapping[6])
+	
+
 	fmt.Println(" Summary By Service")
 	fmt.Printf(" Service List length %d \n", len(tables.serviceMap))
 	for _, service := range tables.serviceMap {
 		fmt.Printf(" [%d] %s  has  %d components ", service.programNumber, service.serviceName, len(service.streamComps))
+		for _, x := range service.streamComps {
+			fmt.Printf(" [0x%x] ::  %d ", x.streamPID, x.streamType)
+		}
 	}
 }

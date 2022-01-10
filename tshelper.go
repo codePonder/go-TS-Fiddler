@@ -9,7 +9,7 @@ import (
 // the data structure that is the TS-Demultiplxer
 type tsdmx struct {
 	pidStats map[uint16]pidInfo
-	globalStats globalInfo
+	globalStats *globalInfo
 	tables tableParser
 }
 
@@ -18,12 +18,19 @@ type pidInfo struct {
 	lastContCount uint8
 	contCountErrors uint64
 	packetCount uint64
+	bitrate uint64
+	packetCountSinceBitrateCalc uint64
+	pcr27MHzAtLastBitrateSlice uint64
+	pktCountAtLastBitrateSlice uint64
 }
 
 
 // information on what we have seen generic to the wholestream
+// for a crude measure of bitrate, just pick 1 PCR PID (any will do :-) )
+// and then count pkts on each pid seen between PCR packets
 type globalInfo struct {
 	totalPackets uint64
+	pcrUsedForCrudeTimings uint16
 }
 
 
@@ -55,6 +62,7 @@ func Newtsdmx ( ) tsdmx {
 	newStruct := tsdmx{}
 	newStruct.pidStats = make(map[uint16]pidInfo)
 	newStruct.tables = newTableParser()
+	newStruct.globalStats = new(globalInfo)
 	return newStruct
 }
 
@@ -75,7 +83,6 @@ func parseTSHeader (nextPacket []byte) (header *tsHeaderInfo) {
 
 // extract bitfield meaning from the adaptation field flags
 func parseTSAdaptFields (adaptationByte uint8, tsAdaptFields *tsAdaptInfo) {
-	tsAdaptFields = new(tsAdaptInfo)
 	tsAdaptFields.discontinuityFlag = adaptationByte & 0x80;
 	tsAdaptFields.raiflag           = adaptationByte & 0x40;          
 	tsAdaptFields.espiflag          = adaptationByte & 0x20;          
@@ -98,6 +105,26 @@ func extractPCR (adaptationData []byte) (pcr27Mhz uint64) {
 	return
 }
 
+
+// TODO - make a more precise measure of bitrate.  For now, its enough to just...
+// PCRs give us a measure of elapsed time in a TS file, there isn't any other reference in a raw TS File
+// Each program has its own PCR, but.... all we really need is a measure of time and a number of packets to 
+// estimate the bitrate of a PID component.  Yes using the PCR of the service would be more accurate, but for
+// _most_ purposes its enough to just have _a_ measure of elapsed time that is close enough
+func takeBitrateSlice(pidStats *map[uint16]pidInfo, pcrNow uint64) {
+
+		for pid, info := range (*pidStats) {
+			packetDelta := info.packetCount - info.pktCountAtLastBitrateSlice
+			// TODO - PCRs wrap aouund ~ 26hours - cope with it!!!!!
+			pcrDelta27Mhz := pcrNow - info.pcr27MHzAtLastBitrateSlice
+			bitrate := ((188 * 8 * packetDelta) * 27000000) / (pcrDelta27Mhz + 1)
+			fmt.Printf("\n  PID known 0x%x  rate %v", pid, bitrate)
+			info.pktCountAtLastBitrateSlice = info.packetCount
+			info.bitrate = bitrate
+			info.pcr27MHzAtLastBitrateSlice = pcrNow
+			(*pidStats)[pid] = info
+		}
+}
 
 // Parse the data sent.  Data must be byte aligned
 // start with a 0x47 (ie the start of a TS packet must be first)
@@ -125,10 +152,15 @@ func (metaInfo tsdmx) ParseTSDataBlob(blobData []byte, blobLength uint64) (dataP
 					parseTSAdaptFields(adaptationBitField, tsAdaptFields)
 					startOfPayload += (1 + adaptationLength);
 					payloadLength = 184 - (1 + adaptationLength);
-
-					if tsAdaptFields.pcrFlag == 1 {
-						pcr27Mhz := extractPCR(nextPacket[5:5+adaptationLength])
-						fmt.Printf("%v", pcr27Mhz)
+					if tsAdaptFields.pcrFlag != 0 {
+						pcr27Mhz := extractPCR(nextPacket[6:6+adaptationLength])
+						fmt.Printf(" \n PCR %v   at count %d   %d 0x%x %d", pcr27Mhz, pidData.packetCount, metaInfo.globalStats.pcrUsedForCrudeTimings, header.pid, 	metaInfo.globalStats.totalPackets )
+						if metaInfo.globalStats.pcrUsedForCrudeTimings == 0 {
+							metaInfo.globalStats.pcrUsedForCrudeTimings = header.pid
+						} else if metaInfo.globalStats.pcrUsedForCrudeTimings == header.pid {
+							takeBitrateSlice(&metaInfo.pidStats, pcr27Mhz)
+							pidData = metaInfo.pidStats[header.pid]
+						}
 					}
 				}
 			}
@@ -162,9 +194,10 @@ func (metaInfo tsdmx) SummariseFindings() {
 
 	fmt.Printf("\n ###################### \n")
 	for k := range metaInfo.pidStats {
-        fmt.Printf("PID found %v    pkts %d \n", k, metaInfo.pidStats[k].packetCount)
+        fmt.Printf("PID found 0x%x    pkts %d \n", k, metaInfo.pidStats[k].packetCount)
     }
 	metaInfo.tables.summariseServiceList()
+	fmt.Printf(" \n Total Packets seem %d\n ", metaInfo.globalStats.totalPackets)
 	fmt.Printf(" ###################### \n")
 	
 
